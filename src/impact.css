@@ -7,3 +7,4 @@
 .method p{line-height:1.55}
 .toolbar select{min-width:112px}
 @media(max-width:650px){.impact-grid{grid-template-columns:1.4fr 1fr 1fr 1fr;font-size:10px}.impact-grid>*{padding:6px}}
+.operational-actions{margin-top:20px}.scenario-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.scenario-grid button{min-height:82px;text-align:left;border:1px solid #dbe5ef;background:#f8fbff;border-radius:7px;padding:12px;color:#254f80;cursor:pointer}.scenario-grid button:hover,.scenario-grid button:focus{border-color:#e85d3f;outline:2px solid #e85d3f33}.scenario-grid button:disabled{opacity:.55;cursor:wait}.scenario-grid b,.scenario-grid small{display:block}.scenario-grid small{margin-top:6px;color:#64758a;font-size:11px;line-height:1.35}@media(max-width:700px){.scenario-grid{grid-template-columns:1fr}}

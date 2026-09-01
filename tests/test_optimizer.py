@@ -1,6 +1,6 @@
 import unittest
 
-from backend.main import block_conflicts, experiment, finish, overlaps, scoped_tasks, windows
+from backend.main import apply_scenario, audit_trail, block_conflicts, experiment, finish, overlaps, run, scoped_tasks, trains, windows
 
 
 class OptimizerValidationTests(unittest.TestCase):
@@ -32,6 +32,17 @@ class OptimizerValidationTests(unittest.TestCase):
         repeat = experiment(7)
         self.assertEqual(self.result["comparison"], repeat["comparison"])
         self.assertEqual(len(scoped_tasks(7)), 672)
+
+    def test_scenario_isolated_and_audited(self):
+        before = len(trains)
+        scenario = apply_scenario("unexpected_train", 7)
+        self.assertEqual(len(trains), before)
+        self.assertEqual(scenario["replanned"]["train_block_conflicts"], 0)
+        self.assertTrue(any(event["event_type"] == "SCENARIO_APPLIED" for event in audit_trail()))
+
+    def test_plan_versions_are_persisted(self):
+        result = run(7)
+        self.assertTrue(result["plan_id"].startswith("PLAN-"))
 
 
 if __name__ == "__main__":

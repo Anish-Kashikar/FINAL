@@ -240,6 +240,20 @@ def audit_trail(limit:int=50):
     with db() as connection: rows=connection.execute("SELECT plan_id,event_type,message,created_at,payload FROM audit_events ORDER BY id DESC LIMIT ?",(limit,)).fetchall()
     return [{**dict(row),"payload":json.loads(row["payload"])} for row in rows]
 
+@app.post("/api/plans/{plan_id}/decision")
+def plan_decision(plan_id:str,action:str=Query(...,pattern="^(approve|modify|reject)$"),reason:str=Query("")):
+    with db() as connection: row=connection.execute("SELECT payload,status FROM plans WHERE plan_id=?",(plan_id,)).fetchone()
+    if not row: raise HTTPException(status_code=404,detail="Plan version not found")
+    payload=json.loads(row["payload"]); violations=validate(payload["railopt"]["blocks"],payload["planning_horizon_days"])
+    if action=="approve" and violations: raise HTTPException(status_code=409,detail="Approval blocked: final safety validation failed")
+    if action=="reject" and not reason.strip(): raise HTTPException(status_code=422,detail="A rejection reason is required")
+    status={"approve":"APPROVED","modify":"MODIFIED","reject":"REJECTED"}[action]
+    with db() as connection:
+        connection.execute("UPDATE plans SET status=? WHERE plan_id=?",(status,plan_id))
+        connection.execute("INSERT INTO approvals (plan_id,block_id,action,reason,created_at) VALUES (?,?,?,?,?)",(plan_id,None,action,reason,datetime.now().isoformat(timespec="seconds")))
+    audit(f"PLAN_{status}",f"{plan_id} {status.lower()} by authorized planner.",plan_id,{"reason":reason,"validation":violations})
+    return {"plan_id":plan_id,"status":status,"execution_ready":status=="APPROVED" and not violations,"violations":violations}
+
 @app.get("/api/scenarios")
 def scenario_library():
     return [{"id":"unexpected_train","name":"Unexpected Train","impact":"Occupies a recommended block; affected work must be replanned."},{"id":"freight_surge","name":"Freight Surge","impact":"Adds freight occupancy to a recommended block."},{"id":"block_closure","name":"Block Closure","impact":"Makes one recommended maintenance window unavailable."},{"id":"critical_task","name":"Critical Asset Failure","impact":"Adds urgent maintenance work using a copied simulation state."},{"id":"department_unavailable","name":"Department Unavailable","impact":"Removes one department's candidate tasks for the scenario."}]

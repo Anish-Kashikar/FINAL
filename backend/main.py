@@ -150,7 +150,7 @@ def experiment(days):
     return {"planning_horizon_days":days,"generated_at":datetime.now().isoformat(timespec="seconds"),"methodology":"Baseline schedules earliest first-feasible work using the same data, windows, duration, capacity and department constraints. RAILSYNC uses CP-SAT with the same inputs and excludes train-occupied blocks.","objective_weights":OBJECTIVE_WEIGHTS,"baseline":{"blocks":base,"metrics":bm,"violations":be},"railopt":{"blocks":opt,"metrics":om,"violations":oe},"comparison":{key:compare(bm[key],om[key],lower) for key,lower in fields}}
 def current(days):
     global latest
-    if latest.get("planning_horizon_days") != days: latest = experiment(days)
+    if latest.get("planning_horizon_days") != days: latest = persist_plan(experiment(days))
     return latest
 def quality():
     issues=[]
@@ -242,6 +242,7 @@ def audit_trail(limit:int=50):
 
 @app.post("/api/plans/{plan_id}/decision")
 def plan_decision(plan_id:str,action:str=Query(...,pattern="^(approve|modify|reject)$"),reason:str=Query("")):
+    global latest
     with db() as connection: row=connection.execute("SELECT payload,status FROM plans WHERE plan_id=?",(plan_id,)).fetchone()
     if not row: raise HTTPException(status_code=404,detail="Plan version not found")
     payload=json.loads(row["payload"]); violations=validate(payload["railopt"]["blocks"],payload["planning_horizon_days"])
@@ -252,6 +253,7 @@ def plan_decision(plan_id:str,action:str=Query(...,pattern="^(approve|modify|rej
         connection.execute("UPDATE plans SET status=? WHERE plan_id=?",(status,plan_id))
         connection.execute("INSERT INTO approvals (plan_id,block_id,action,reason,created_at) VALUES (?,?,?,?,?)",(plan_id,None,action,reason,datetime.now().isoformat(timespec="seconds")))
     audit(f"PLAN_{status}",f"{plan_id} {status.lower()} by authorized planner.",plan_id,{"reason":reason,"validation":violations})
+    if latest.get("plan_id")==plan_id: latest["status"]=status
     return {"plan_id":plan_id,"status":status,"execution_ready":status=="APPROVED" and not violations,"violations":violations}
 
 @app.get("/api/scenarios")

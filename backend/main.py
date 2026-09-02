@@ -8,6 +8,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from ortools.sat.python import cp_model
+from backend.ml.model import load_metadata, predict
 
 ROOT = Path(__file__).resolve().parents[1]; DATA = ROOT / "seed_data"; START = datetime(2026, 9, 1)
 DB_PATH = ROOT / "railsync.db"
@@ -56,14 +57,15 @@ def overlaps(a, b, c, d): return max(a, c) < min(b, d)
 def minutes(task): return int(task["estimated_duration_minutes"])
 
 def score(task):
+    ml_probability, ml_used, ml_signals = predict(task, by_asset.get(task["asset_id"], {}))
     urgency = max(0, min(100, 120 - max(0, (dt(task["deadline"]) - START).total_seconds() / 3600)))
-    factors = {"severity": SCALE[task["severity"]], "urgency": urgency, "failure": float(task["failure_probability"]) * 100, "criticality": SCALE[task["asset_criticality"]], "traffic": SCALE[task["traffic_impact"]]}
+    factors = {"severity": SCALE[task["severity"]], "urgency": urgency, "failure": ml_probability * 100, "criticality": SCALE[task["asset_criticality"]], "traffic": SCALE[task["traffic_impact"]]}
     total = round(sum(factors[k] * PRIORITY_WEIGHTS[k] / 100 for k in PRIORITY_WEIGHTS), 1)
     level = "CRITICAL" if total >= 75 else "HIGH" if total >= 58 else "MEDIUM" if total >= 40 else "LOW"
-    return total, level, factors
+    return total, level, factors, ml_probability, ml_used, ml_signals
 def view(task):
-    value, level, factors = score(task)
-    return {**task, "asset": by_asset.get(task["asset_id"], {}), "location": by_loc.get(task["location_id"], {}), "priority_score": value, "priority_level": level, "reason": f"{task['severity']} severity, {int(float(task['failure_probability'])*100)}% failure risk and {task['asset_criticality'].lower()} criticality.", "contributing_factors": factors}
+    value, level, factors, ml_probability, ml_used, ml_signals = score(task)
+    return {**task, "asset": by_asset.get(task["asset_id"], {}), "location": by_loc.get(task["location_id"], {}), "priority_score": value, "priority_level": level, "ml_failure_probability": round(ml_probability,3), "ml_risk_level": "HIGH" if ml_probability>=.65 else "MEDIUM" if ml_probability>=.35 else "LOW", "ml_model_used": ml_used, "ml_signals": ml_signals, "reason": f"{task['severity']} severity, {int(ml_probability*100)}% risk input and {task['asset_criticality'].lower()} criticality.", "contributing_factors": factors}
 def scoped_tasks(days): return sorted((view(t) for t in tasks if t["status"] != "Completed" and dt(t["earliest_start"]) < finish(days)), key=lambda t: (-t["priority_score"], t["task_id"]))
 def feasible(task, block, cutoff): return block["corridor"] == task["corridor"] and dt(block["start_time"]) < cutoff and minutes(task) <= int(block["duration_minutes"]) and dt(block["start_time"]) >= dt(task["earliest_start"]) and dt(block["end_time"]) <= dt(task["deadline"])
 
@@ -193,6 +195,25 @@ def approve(block_id:str,action:str=Query(...,pattern="^(approve|reject|modify)$
 @app.get("/api/analytics")
 def analytics(horizon:int=Query(7,ge=1,le=30)):
     x=current(horizon); return {"assets":len(assets),"tasks":len(tasks),"by_severity":[{"name":k,"value":sum(t["severity"]==k for t in tasks)} for k in SCALE],"by_condition":[{"name":k,"value":sum(a["condition"]==k for a in assets)} for k in ["Good","Fair","Poor","Critical"]],"baseline":x["baseline"]["metrics"],"railopt":x["railopt"]["metrics"],"comparison":x["comparison"]}
+
+@app.get("/api/ml/status")
+def ml_status():
+    metadata=load_metadata()
+    return {"enabled":bool(metadata),"model":"RandomForestClassifier" if metadata else None,"training_data":"Simulated Historical Data","fallback_available":True,"trained_at":metadata.get("trained_at") if metadata else None,"message":"Simulation ML active" if metadata else "ML unavailable - deterministic risk fallback active"}
+
+@app.get("/api/ml/metrics")
+def ml_metrics():
+    return load_metadata() or {"enabled":False,"message":"ML unavailable - train with python -m backend.ml.train"}
+
+@app.get("/api/ml/risk-predictions")
+def ml_risk_predictions(horizon:int=Query(7,ge=1,le=30)):
+    return [{"task_id":task["task_id"],"asset_id":task["asset_id"],"predicted_failure_probability":task["ml_failure_probability"],"risk_level":task["ml_risk_level"],"model_used":task["ml_model_used"],"data_mode":"SIMULATION","top_factors":task["ml_signals"]} for task in scoped_tasks(horizon)]
+
+@app.get("/api/ml/risk-predictions/{task_id}")
+def ml_risk_prediction(task_id:str,horizon:int=Query(7,ge=1,le=30)):
+    task=next((item for item in scoped_tasks(horizon) if item["task_id"]==task_id),None)
+    if not task: raise HTTPException(status_code=404,detail="Task not found")
+    return {"task_id":task_id,"asset_id":task["asset_id"],"predicted_failure_probability":task["ml_failure_probability"],"risk_level":task["ml_risk_level"],"model_used":task["ml_model_used"],"data_mode":"SIMULATION","top_factors":task["ml_signals"]}
 
 def block_explanation(block, days=7):
     candidates=[]
